@@ -36,6 +36,8 @@ int tinkerEcho(String command);
 
 SYSTEM_MODE(AUTOMATIC);
 
+double temperature = 0.0;
+
 /* This function is called once at start up ----------------------------------*/
 void setup()
 {
@@ -53,6 +55,9 @@ void setup()
 	Spark.function("led", tinkerLed);
 	Spark.function("echo", tinkerEcho);
 
+	Spark.variable("temperature", &temperature, DOUBLE);
+	pinMode(A7, INPUT);
+
 	pinMode(D0, INPUT_PULLUP);
 	pinMode(D1, INPUT_PULLUP);
 	pinMode(D7, OUTPUT);
@@ -61,13 +66,9 @@ void setup()
 /* This function loops forever --------------------------------------------*/
 void loop()
 {
-//	digitalWrite(D7, digitalRead(D0));
-//	while (digitalRead(D0) == HIGH) {
-//		digitalWrite(D7, HIGH);          // sets the LED on
-//		delay(200);                       // waits for 200mS
-//		digitalWrite(D7, LOW);           // sets the LED off
-//		delay(200);                       // waits for 200mS
-//	}
+	int reading = 0;
+	reading = analogRead(A7);
+	temperature = reading;
 }
 
 /*******************************************************************************
