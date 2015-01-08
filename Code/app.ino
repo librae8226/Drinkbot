@@ -47,6 +47,9 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "application.h"
+#include "OneWire.h"
+#include "spark-dallas-temperature.h"
+#include <math.h>
 
 /* Definitions ---------------------------------------------------------------*/
 SYSTEM_MODE(AUTOMATIC);
@@ -62,10 +65,15 @@ enum {
 #define NPUMPS		8
 #define vol2time(vol)	((unsigned long)vol*1000)	// vol -> millis, to be fixed according to actual case
 
+#define IO_TEMP		D4
+#define IO_ALCOH1	A3
+#define IO_ALCOH2	A2
+#define ALCOHOL_THRES	680	// reading value larger than this indicates alcohol sensor not ready
+
 /* Variables -----------------------------------------------------------------*/
 static double temperature = 0.0;
-static double alcohol1 = 0.0;
-static double alcohol2 = 0.0;
+static double bac1 = 0.0;
+static double bac2 = 0.0;
 static int state = STATE_BOOTING;
 static int pumpsOnVol[NPUMPS] = {0, 0, 0, 0, 0, 0, 0, 0};	// unit: cl
 static int pumpsStatus[NPUMPS] = {0, 0, 0, 0, 0, 0, 0, 0};	// 1: on, 0: off
@@ -73,16 +81,16 @@ static unsigned long timeStart = 0;
 
 static const int pump2io[NPUMPS] = {D0, D1, A0, A1, A4, A5, A6, A7};
 
+OneWire oneWire(IO_TEMP);
+DallasTemperature tsensor(&oneWire);
+
 /* Function prototypes -------------------------------------------------------*/
-int tinkerDigitalRead(String pin);
-int tinkerDigitalWrite(String command);
-int tinkerAnalogRead(String pin);
-int tinkerAnalogWrite(String command);
 int drinkbotSetPumps(String command);
 int drinkbotDebug(String command);
 
 static void changestate(int s);
 static int parseparams(String command, int id);
+static double calculateBAC(int mq3_pin);
 static int collectdata(void);
 static void controlpump(int id, boolean on);
 static void startpumpjobs(int p[NPUMPS]);
@@ -96,6 +104,7 @@ void setup()
 
 	//Setup the logging functions
 	Serial.begin(9600);
+	Serial.println("setup...");
 
 	//Setup communication bus with secondary processor
 //	Serial1.begin(9600);
@@ -103,23 +112,19 @@ void setup()
 	//Setup the Tinker application here
 	RGB.brightness(12);
 
-	//Register all the Tinker functions
-	Spark.function("digitalread", tinkerDigitalRead);
-	Spark.function("digitalwrite", tinkerDigitalWrite);
-
-	Spark.function("analogread", tinkerAnalogRead);
-	Spark.function("analogwrite", tinkerAnalogWrite);
-
 	//Register all the Drinkbot functions
 	Spark.function("setpumps", drinkbotSetPumps);
 	Spark.function("debug", drinkbotDebug);
 
 	//Register all the Drinkbot variables
 	Spark.variable("temperature", &temperature, DOUBLE);
-	pinMode(D7, INPUT);
-	Spark.variable("alcohol1", &alcohol1, DOUBLE);
+	Serial.println("setup Dallas Temperature IC Control...");
+	tsensor.begin();
+	tsensor.setResolution(12);
+
+	Spark.variable("bac1", &bac1, DOUBLE);
 	pinMode(A3, INPUT);
-	Spark.variable("alcohol2", &alcohol2, DOUBLE);
+	Spark.variable("bac2", &bac2, DOUBLE);
 	pinMode(A2, INPUT);
 
 	//Pumps
@@ -140,8 +145,8 @@ void loop()
 		Serial.println("Booting...");
 
 		temperature = 0.0;
-		alcohol1 = 0.0;
-		alcohol2 = 0.0;
+		bac1 = 0.0;
+		bac2 = 0.0;
 		state = STATE_BOOTING;
 		memset(pumpsOnVol, 0, sizeof(pumpsOnVol));
 		memset(pumpsStatus, 0, sizeof(pumpsStatus));
@@ -168,128 +173,14 @@ void loop()
 		Serial.println(state);
 		break;
 	}
-}
 
-/*******************************************************************************
- * Function Name  : tinkerDigitalRead
- * Description    : Reads the digital value of a given pin
- * Input          : Pin
- * Output         : None.
- * Return         : Value of the pin (0 or 1) in INT type
-                    Returns a negative number on failure
- *******************************************************************************/
-int tinkerDigitalRead(String pin)
-{
-	//convert ascii to integer
-	int pinNumber = pin.charAt(1) - '0';
-	//Sanity check to see if the pin numbers are within limits
-	if (pinNumber < 0 || pinNumber > 7)
-		return -1;
-
-	if(pin.startsWith("D"))
-	{
-		pinMode(pinNumber, INPUT_PULLDOWN);
-		return digitalRead(pinNumber);
-	}
-	else if (pin.startsWith("A"))
-	{
-		pinMode(pinNumber + 10, INPUT_PULLDOWN);
-		return digitalRead(pinNumber + 10);
-	}
-	return -2;
-}
-
-/*******************************************************************************
- * Function Name  : tinkerDigitalWrite
- * Description    : Sets the specified pin HIGH or LOW
- * Input          : Pin and value
- * Output         : None.
- * Return         : 1 on success and a negative number on failure
- *******************************************************************************/
-int tinkerDigitalWrite(String command)
-{
-	bool value = 0;
-	//convert ascii to integer
-	int pinNumber = command.charAt(1) - '0';
-	//Sanity check to see if the pin numbers are within limits
-	if (pinNumber < 0 || pinNumber > 7) return -1;
-
-	if(command.substring(3, 7) == "HIGH") value = 1;
-	else if(command.substring(3, 6) == "LOW") value = 0;
-	else return -2;
-
-	if(command.startsWith("D"))
-	{
-		pinMode(pinNumber, OUTPUT);
-		digitalWrite(pinNumber, value);
-		return 1;
-	}
-	else if(command.startsWith("A"))
-	{
-		pinMode(pinNumber + 10, OUTPUT);
-		digitalWrite(pinNumber + 10, value);
-		return 1;
-	}
-	else return -3;
-}
-
-/*******************************************************************************
- * Function Name  : tinkerAnalogRead
- * Description    : Reads the analog value of a pin
- * Input          : Pin
- * Output         : None.
- * Return         : Returns the analog value in INT type (0 to 4095)
-                    Returns a negative number on failure
- *******************************************************************************/
-int tinkerAnalogRead(String pin)
-{
-	//convert ascii to integer
-	int pinNumber = pin.charAt(1) - '0';
-	//Sanity check to see if the pin numbers are within limits
-	if (pinNumber < 0 || pinNumber > 7) return -1;
-
-	if(pin.startsWith("D"))
-	{
-		pinMode(pinNumber, INPUT);
-		return analogRead(pinNumber);
-	}
-	else if (pin.startsWith("A"))
-	{
-		pinMode(pinNumber + 10, INPUT);
-		return analogRead(pinNumber + 10);
-	}
-	return -2;
-}
-
-/*******************************************************************************
- * Function Name  : tinkerAnalogWrite
- * Description    : Writes an analog value (PWM) to the specified pin
- * Input          : Pin and Value (0 to 255)
- * Output         : None.
- * Return         : 1 on success and a negative number on failure
- *******************************************************************************/
-int tinkerAnalogWrite(String command)
-{
-	//convert ascii to integer
-	int pinNumber = command.charAt(1) - '0';
-	//Sanity check to see if the pin numbers are within limits
-	if (pinNumber < 0 || pinNumber > 7) return -1;
-
-	String value = command.substring(3);
-
-	if(command.startsWith("D"))
-	{
-		pinMode(pinNumber, OUTPUT);
-		analogWrite(pinNumber, value.toInt());
-		return 1;
-	}
-	else if(command.startsWith("A"))
-	{
-		pinMode(pinNumber + 10, OUTPUT);
-		analogWrite(pinNumber + 10, value.toInt());
-		return 1;
-	}
-	else return -2;
+	/*
+	 * FIXME This delay ensures the whole system won't be blocked.
+	 * Especially like virtual COM device, these guys will hang without
+	 * delay. But we need to provide a proper value so that there won't
+	 * be too much loss of the whole system efficiency.
+	 */
+	delay(100);
 }
 
 /*******************************************************************************
@@ -310,8 +201,8 @@ int drinkbotSetPumps(String command)
 	Serial.println(command);
 
 	if (command.length() != 47) {
-//		Serial.println("Please use correct format for args, e.g.");
-//		Serial.println("\tP0:10;P1:00;P2:20;P3:05;P4:07;P5:15;P6:00;P7:10");
+		Serial.println("Please use correct format for args, e.g.");
+		Serial.println("\tP0:10;P1:00;P2:20;P3:05;P4:07;P5:15;P6:00;P7:10");
 		return -EINVAL;
 	}
 
@@ -360,11 +251,11 @@ int drinkbotDebug(String command)
 	Serial.print("temperature: ");
 	Serial.println(temperature);
 
-	Serial.print("alcohol1: ");
-	Serial.println(alcohol1);
+	Serial.print("bac1: ");
+	Serial.println(bac1);
 
-	Serial.print("alcohol2: ");
-	Serial.println(alcohol2);
+	Serial.print("bac2: ");
+	Serial.println(bac2);
 
 	Serial.print("state: ");
 	Serial.println(state);
@@ -409,17 +300,28 @@ static int parseparams(String command, int id)
 	return command.substring(6*id+3, 6*id+5).toInt();
 }
 
-// TODO need to poll sensors and calculate data
+static double calculateBAC(int mq3_pin)
+{
+	int mq3_raw = 0, mq3_raw_max = 0;
+	int i;
+	mq3_raw = analogRead(mq3_pin);
+	if (mq3_raw < ALCOHOL_THRES) {
+		for(i = 0; i < 100; i++) {
+			mq3_raw = analogRead(mq3_pin);
+			mq3_raw_max = (mq3_raw > mq3_raw_max) ? mq3_raw : mq3_raw_max;
+		}
+	}
+	return pow(((-3.757)*pow(10, -7))*mq3_raw_max, 2) + 0.0008613*mq3_raw_max - 0.3919;
+}
+
 static int collectdata(void)
 {
-	int reading = 0;
 
-	reading = analogRead(A3);
-	alcohol1 = reading;
-	reading = analogRead(A2);
-	alcohol2 = reading;
-	reading = analogRead(D7);
-	temperature = reading;
+	bac1 = calculateBAC(IO_ALCOH1);
+	bac2 = calculateBAC(IO_ALCOH2);
+
+	tsensor.requestTemperatures();
+	temperature = tsensor.getTempCByIndex(0);
 
 	return 0;
 }
