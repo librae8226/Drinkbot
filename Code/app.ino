@@ -120,7 +120,6 @@ void setup()
 	Spark.variable("temperature", &temperature, DOUBLE);
 	Serial.println("setup Dallas Temperature IC Control...");
 	tsensor.begin();
-	tsensor.setResolution(12);
 
 	Spark.variable("bac1", &bac1, DOUBLE);
 	pinMode(A3, INPUT);
@@ -180,7 +179,7 @@ void loop()
 	 * delay. But we need to provide a proper value so that there won't
 	 * be too much loss of the whole system efficiency.
 	 */
-	delay(100);
+	delay(500);
 }
 
 /*******************************************************************************
