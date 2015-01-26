@@ -52,6 +52,8 @@
 #include <math.h>
 
 /* Definitions ---------------------------------------------------------------*/
+//#define __DEBUG__
+
 SYSTEM_MODE(AUTOMATIC);
 
 enum {
@@ -81,8 +83,13 @@ enum {
 #define IO_ALCOH2	A2
 #define ALCOHOL_THRES	680	// reading value larger than this indicates alcohol sensor not ready
 
+#define SERIALNO_LEN	12
+#define TEMPFOREACH_LEN	39
+
 /* Variables -----------------------------------------------------------------*/
 static double temperature = 0.0;
+static char tempforeach[TEMPFOREACH_LEN + 1] = "";
+static char serialno[SERIALNO_LEN + 1] = "";
 static double bac1 = 0.0;
 static double bac2 = 0.0;
 static int state = STATE_BOOTING;
@@ -111,6 +118,10 @@ static void startpumpjobs(int p[NPUMPS]);
 static int npumpson(int ps[NPUMPS]);
 static void finishpumpjobs(int p[NPUMPS]);
 
+static int secondaryCPUSendRecv(String cmd, char buf[]);
+static char *secondaryCPUGetId(void);
+static char *secondaryCPUGetTemperature(void);
+
 /* This function is called once at start up ----------------------------------*/
 void setup()
 {
@@ -121,7 +132,10 @@ void setup()
 	Serial.println("setup...");
 
 	//Setup communication bus with secondary processor
-//	Serial1.begin(9600);
+	Serial1.begin(9600);
+	Serial1.print('\r');
+	Serial1.print('\r');
+	Serial1.print('\r');
 
 	//Setup the Tinker application here
 	RGB.brightness(12);
@@ -139,6 +153,9 @@ void setup()
 	pinMode(A3, INPUT);
 	Spark.variable("bac2", &bac2, DOUBLE);
 	pinMode(A2, INPUT);
+
+	Spark.variable("tempforeach", &tempforeach, STRING);
+	Spark.variable("serialno", &serialno, STRING);
 
 	//Pumps
 	for (i = 0; i < NPUMPS; i++) {
@@ -295,6 +312,9 @@ int drinkbotDebug(String command)
 	}
 	Serial.println("");
 
+	secondaryCPUGetId();
+	secondaryCPUGetTemperature();
+
 	return command.charAt(0);
 }
 
@@ -420,4 +440,71 @@ static void finishpumpjobs(int p[NPUMPS])
 		Serial.println(timeDelta);
 		changestate(STATE_LISTENING);
 	}
+}
+
+static int secondaryCPUSendRecv(String cmd, char buf[])
+{
+	char *p = buf;
+
+	Serial.print("send cmd: ");
+	Serial.println(cmd);
+
+	Serial1.flush();
+	Serial1.print(cmd);
+
+	/*
+	 * FIXME We didn't implement any protocol for the communication
+	 * between processors, so this is just a quick hacking solution
+	 */
+	delay(100);
+
+	while (Serial1.available()) {
+		*p = Serial1.read();
+#ifdef __DEBUG__
+		Serial.print("rx: ");
+		Serial.print(ret);
+		Serial.print(" (");
+		Serial.print((int)*p);
+		Serial.println(")");
+#endif
+		p++;
+	};
+
+	return 0;
+}
+
+static char *secondaryCPUGetId(void)
+{
+	char buf[SERIAL_BUFFER_SIZE] = "";
+	char *p;
+	secondaryCPUSendRecv("ID\r", buf);
+#ifdef __DEBUG__
+	Serial.print("recv data: ");
+	Serial.println(buf);
+#endif
+	p = strstr(buf, "ID:");
+	if (p != NULL) {
+		strncpy(serialno, p+3, SERIALNO_LEN);
+		Serial.print("serialno: ");
+		Serial.println(serialno);
+	}
+	return serialno;
+}
+
+static char *secondaryCPUGetTemperature(void)
+{
+	char buf[SERIAL_BUFFER_SIZE] = "";
+	char *p;
+	secondaryCPUSendRecv("TMP\r", buf);
+#ifdef __DEBUG__
+	Serial.print("recv data: ");
+	Serial.println(buf);
+#endif
+	p = strstr(buf, "TMP:");
+	if (p != NULL) {
+		strncpy(tempforeach, p+4, TEMPFOREACH_LEN);
+		Serial.print("tempforeach: ");
+		Serial.println(tempforeach);
+	}
+	return tempforeach;
 }
